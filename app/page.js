@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const STATUSES = ["Unverified", "Corroborated", "Dead end", "Key evidence"];
 const SOUNDTRACK = "https://suno.com/song/c51ec285-50d8-4657-aef6-4f6144423f94";
@@ -26,9 +26,8 @@ export function CaseFile({ text }) {
 }
 
 export default function LeDossier() {
-  // Every clue you add lives in this one variable. This variable lives in the
-  // browser's memory, which lasts exactly as long as the page does. Sprint 1.
   const [clues, setClues] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   const [tab, setTab] = useState("dossier");
   const [what, setWhat] = useState("");
@@ -41,22 +40,33 @@ export default function LeDossier() {
   const [copied, setCopied] = useState(false);
   const audio = useRef(null);
 
+  useEffect(() => {
+    fetch("/api/clues")
+      .then((r) => r.json())
+      .then((data) => setClues(data.clues || []))
+      .finally(() => setLoading(false));
+  }, []);
+
   function toggleTrack() {
     const el = audio.current;
     if (!el) return;
     if (el.paused) { el.play(); setPlaying(true); } else { el.pause(); setPlaying(false); }
   }
 
-  function addClue(event) {
+  async function addClue(event) {
     event.preventDefault();
     if (!what.trim()) return;
-    setClues([...clues, newClue(what, source || "unattributed")]);
+    const text = what;
+    const from = source || "unattributed";
     setWhat("");
     setSource("");
-  }
-
-  function newClue(text, from) {
-    return { id: crypto.randomUUID(), what: text.trim(), source: from.trim(), status: "Unverified" };
+    const response = await fetch("/api/clues", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ what: text, source: from }),
+    });
+    const data = await response.json();
+    if (data.clues) setClues([...clues, ...data.clues]);
   }
 
   async function extractFromLink(event) {
@@ -71,13 +81,34 @@ export default function LeDossier() {
     });
     const data = await response.json();
     if (data.clues) {
-      setClues([...clues, ...data.clues.map((c) => newClue(c.what, c.source || link.trim()))]);
+      const saved = await fetch("/api/clues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clues: data.clues.map((c) => ({ what: c.what, source: c.source || link.trim() })),
+        }),
+      }).then((r) => r.json());
+      setClues([...clues, ...(saved.clues || [])]);
       setLink("");
     } else {
       setTab("rapport");
       setReport({ stub: true, text: data.error });
     }
     setBusy("");
+  }
+
+  async function updateStatus(id, status) {
+    setClues(clues.map((c) => (c.id === id ? { ...c, status } : c)));
+    await fetch(`/api/clues/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  async function discardClue(id) {
+    setClues(clues.filter((c) => c.id !== id));
+    await fetch(`/api/clues/${id}`, { method: "DELETE" });
   }
 
   async function publish() {
@@ -177,7 +208,9 @@ export default function LeDossier() {
               ))}
             </div>
 
-            {shown.length === 0 ? (
+            {loading ? (
+              <p className="empty">Loading the case file…</p>
+            ) : shown.length === 0 ? (
               <p className="empty">
                 {clues.length === 0
                   ? "The evidence board is empty. What does the room remember?"
@@ -194,16 +227,14 @@ export default function LeDossier() {
                     <select
                       className="status"
                       value={clue.status}
-                      onChange={(e) =>
-                        setClues(clues.map((c) => (c.id === clue.id ? { ...c, status: e.target.value } : c)))
-                      }
+                      onChange={(e) => updateStatus(clue.id, e.target.value)}
                       aria-label="Status"
                     >
                       {STATUSES.map((s) => (
                         <option key={s}>{s}</option>
                       ))}
                     </select>
-                    <button className="btn quiet" onClick={() => setClues(clues.filter((c) => c.id !== clue.id))}>
+                    <button className="btn quiet" onClick={() => discardClue(clue.id)}>
                       Discard
                     </button>
                   </li>
@@ -308,14 +339,14 @@ export default function LeDossier() {
               <li><b>Key evidence</b><span>True, and it changes the picture.</span></li>
             </ul>
 
-            <h3>Three things this app can&rsquo;t do yet</h3>
+            <h3>Where this stood at the start of the session</h3>
             <div className="missing">
               <ol className="rules">
-                <li><b>It can&rsquo;t read.</b> Paste a link and nothing happens. Reading an article is a job for an AI, and this app has no key of its own.</li>
-                <li><b>It can&rsquo;t remember.</b> Add clues and refresh the page. Gone. They were only ever in your browser.</li>
-                <li><b>It can&rsquo;t share.</b> Publishing a report means saving it somewhere first, and there is nowhere yet.</li>
+                <li><b>It couldn&rsquo;t read.</b> Reading an article was a job for an AI, and the app had no key of its own. Fixed: it now calls Claude.</li>
+                <li><b>It couldn&rsquo;t remember.</b> Clues lived only in the browser tab. Fixed: they&rsquo;re saved to a database now.</li>
+                <li><b>It couldn&rsquo;t share.</b> Publishing needed somewhere to save the report first. Fixed: reports get a real, shareable link.</li>
               </ol>
-              <p>Those three gaps are the session, <b>in that order</b>. You are going to close all of them.</p>
+              <p>Those three gaps were the session, <b>in that order</b>. All three are closed.</p>
             </div>
 
             <h3>Sources</h3>
